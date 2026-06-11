@@ -1,0 +1,34 @@
+name: spanet
+
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - nodefaults
+
+dependencies:
+  - python=3.11.*
+  - conda
+  - pip
+  - onnx
+
+  - numpy=1.26
+  - sympy
+  - scikit-learn
+  - numba
+  - opt_einsum
+  - h5py
+  - cytoolz
+
+  - pytorch=2.3
+  - pytorch-lightning=2.4
+  - pytorch-cuda=12.1
+  - torchvision
+  - torchaudio
+
+  - tensorboard
+  - tensorboardx
+
+  - jupyterlab
+  - seaborn
+  - rich
