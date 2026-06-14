@@ -146,7 +146,6 @@ def main(
             monitor='validation_average_jet_accuracy',
             save_top_k=3,
             mode='max',
-            save_last=True
         ),
         LearningRateMonitor(),
         DeviceStatsMonitor(),
