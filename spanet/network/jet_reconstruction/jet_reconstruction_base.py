@@ -1,3 +1,5 @@
+from collections import OrderedDict
+
 import pytorch_lightning as pl
 import numpy as np
 import torch
@@ -48,6 +50,8 @@ class JetReconstructionBase(pl.LightningModule):
         # Helper arrays for permutation groups. Used for the partial-event loss functions.
         event_permutation_group = np.array(self.event_info.event_permutation_group)
         self.event_permutation_tensor = torch.nn.Parameter(torch.from_numpy(event_permutation_group), False)
+
+        self.product_permutation_tensors = OrderedDict([(key, torch.nn.Parameter(torch.from_numpy(np.array(value)), False)) for key, value in self.event_info.product_permutation_groups.items()])
 
         # Helper variables for keeping track of the number of batches in each epoch.
         # Used for learning rate scheduling and other things.
