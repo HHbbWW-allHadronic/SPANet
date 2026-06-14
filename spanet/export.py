@@ -124,8 +124,8 @@ def main(
         output_log_transform: bool,
         output_embeddings: bool,
         gpu: bool,
-        opset: int
-        checkpoint: str = None
+        opset: int,
+        checkpoint: str = None,
 ):
     major_version, minor_version, *_ = torch.__version__.split(".")
     if int(major_version) == 2 and int(minor_version) == 0:
