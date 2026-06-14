@@ -39,25 +39,35 @@ class JetReconstructionValidation(JetReconstructionNetwork):
 
     def compute_metrics(self, jet_predictions, particle_scores, stacked_targets, stacked_masks, stacked_weights):
         event_permutation_group = self.event_permutation_tensor.cpu().numpy()
-        num_permutations = len(event_permutation_group)
+        product_permutation_groups = [value.cpu().numpy() for value in self.product_permutation_tensors.values()]
+        num_event_permutations = len(event_permutation_group)
         num_targets, batch_size = stacked_masks.shape
         particle_predictions = particle_scores >= 0.5
 
         # Compute all possible target permutations and take the best performing permutation
         # First compute raw_old accuracy so that we can get an accuracy score for each event
         # This will also act as the method for choosing the best permutation to compare for the other metrics.
-        jet_accuracies = np.zeros((num_permutations, num_targets, batch_size), dtype=bool)
-        weighted_jet_accuracies = np.zeros((num_permutations, num_targets, batch_size), dtype=bool)
-        particle_accuracies = np.zeros((num_permutations, num_targets, batch_size), dtype=bool)
-        for i, permutation in enumerate(event_permutation_group):
-            for j, (prediction, target, weight) in enumerate(zip(jet_predictions, stacked_targets[permutation], stacked_weights[permutation])):
-                jet_accuracies[i, j] = np.all(prediction == target, axis=1)
-                weighted_jet_accuracies[i, j] = np.all(prediction == target, axis=1) * weight
 
-            particle_accuracies[i] = stacked_masks[permutation] == particle_predictions
+        # Jet accuracies are kept in lists of arrays as opposed to a single NumPy array since each
+        # resonance can have a different number of product permutations
 
-        jet_accuracies = jet_accuracies.sum(1)
-        weighted_jet_accuracies = weighted_jet_accuracies.sum(1)
+        jet_accuracies = [np.zeros((len(product_permutation_groups[i]), num_event_permutations, batch_size), dtype=bool) for i in range(num_targets)]
+        weighted_jet_accuracies = [np.zeros(jet_accuracy.shape, dtype=bool) for jet_accuracy in jet_accuracies]
+        particle_accuracies = np.zeros((num_event_permutations, num_targets, batch_size), dtype=bool)
+        for i, event_permutation in enumerate(event_permutation_group):
+            for j, (prediction, target, weight) in enumerate(zip(jet_predictions, stacked_targets[event_permutation], stacked_weights[event_permutation])):
+                for k, product_permutation in enumerate(product_permutation_groups[j]):
+                    jet_accuracies[j][k, i] = np.all(prediction == target[..., product_permutation], axis=1)
+                    weighted_jet_accuracies[j][k, i] = jet_accuracies[j][k, i] * weight
+
+            particle_accuracies[i] = stacked_masks[event_permutation] == particle_predictions
+
+        for i in range(num_targets):
+            jet_accuracies[i] = jet_accuracies[i].max(axis=0)
+            weighted_jet_accuracies[i] = weighted_jet_accuracies[i].max(axis=0)
+
+        jet_accuracies = np.asarray(jet_accuracies).sum(axis=0)
+        weighted_jet_accuracies = np.asarray(weighted_jet_accuracies).sum(axis=0)
         particle_accuracies = particle_accuracies.sum(1)
 
         # Select the primary permutation which we will use for all other metrics.
