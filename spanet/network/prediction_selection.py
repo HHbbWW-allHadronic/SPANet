@@ -118,6 +118,8 @@ def mask_jet(data, num_partons, max_jets, index, value):
     #     mask_7(data, max_jets, index, value)
     # elif num_partons == 8:
     #     mask_8(data, max_jets, index, value)
+    else:
+        raise NotImplementedError(f'mask_jet() with num_partons = {num_partons}')
 
 
 @njit("int64[::1](int64, int64)")
