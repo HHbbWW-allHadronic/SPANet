@@ -229,9 +229,10 @@ def main(
     lines: int,
     gpu: bool,
     fp16: bool,
-    latex: bool
+    latex: bool,
+    checkpoint: str = None,
 ):
-    model = load_model(log_directory, test_file, event_file, batch_size, gpu, fp16=fp16)
+    model = load_model(log_directory, test_file, event_file, batch_size, gpu, fp16=fp16, checkpoint=checkpoint)
     evaluation = evaluate_on_test_dataset(model, fp16=fp16)
 
     # Flatten predictions
@@ -275,6 +276,10 @@ if __name__ == '__main__':
 
     parser.add_argument("-tex", "--latex", action="store_true",
                         help="Output a latex table.")
+
+    parser.add_argument("-c", "--checkpoint", type=str, default=None,
+                        help="Path to a specific checkpoint file to export. "
+                             "If not provided, uses the last checkpoint from the log directory.")
 
     arguments = parser.parse_args()
     main(**arguments.__dict__)
