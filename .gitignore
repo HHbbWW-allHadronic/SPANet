@@ -245,4 +245,8 @@ ipython_config.py
 # pytorch-lightning output
 *_logs/
 *_output/
+<<<<<<< HEAD
 environment/
+=======
+environment/
+>>>>>>> origin/mp_branch

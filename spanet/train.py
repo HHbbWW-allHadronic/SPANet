@@ -173,8 +173,7 @@ def main(
 
         logger=logger,
         profiler=profiler,
-        callbacks=callbacks,
-        log_every_n_steps=10
+        callbacks=callbacks
     )
 
     # Save the current hyperparameters to a json file in the checkpoint directory

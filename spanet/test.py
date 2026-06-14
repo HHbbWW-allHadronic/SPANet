@@ -199,7 +199,6 @@ def evaluate_predictions(predictions: ArrayLike, num_vectors: ArrayLike, targets
     evaluator = SymmetricEvaluator(event_info)
 
     minimum_jet_count = num_vectors.min()
-    #minimum_jet_count = 3
     jet_limits = [f"== {minimum_jet_count + i}" for i in range(lines)]
     jet_limits.append(f">= {minimum_jet_count + lines}")
     jet_limits.append(None)
@@ -230,9 +229,16 @@ def main(
     lines: int,
     gpu: bool,
     fp16: bool,
+<<<<<<< HEAD
     latex: bool
 ):
     model = load_model(log_directory, test_file, event_file, batch_size, gpu, fp16=fp16)
+=======
+    latex: bool,
+    checkpoint: str = None,
+):
+    model = load_model(log_directory, test_file, event_file, batch_size, gpu, fp16=fp16, checkpoint=checkpoint)
+>>>>>>> origin/mp_branch
     evaluation = evaluate_on_test_dataset(model, fp16=fp16)
 
     # Flatten predictions
@@ -277,6 +283,13 @@ if __name__ == '__main__':
     parser.add_argument("-tex", "--latex", action="store_true",
                         help="Output a latex table.")
 
+<<<<<<< HEAD
+=======
+    parser.add_argument("-c", "--checkpoint", type=str, default=None,
+                        help="Path to a specific checkpoint file to export. "
+                             "If not provided, uses the last checkpoint from the log directory.")
+
+>>>>>>> origin/mp_branch
     arguments = parser.parse_args()
     main(**arguments.__dict__)
 

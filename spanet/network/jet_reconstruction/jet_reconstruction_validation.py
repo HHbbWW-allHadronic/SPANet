@@ -25,9 +25,9 @@ class JetReconstructionValidation(JetReconstructionNetwork):
     def particle_metrics(self) -> Dict[str, Callable[[np.ndarray, np.ndarray], float]]:
         return {
             "accuracy": sk_metrics.accuracy_score,
-            "sensitivity": sk_metrics.recall_score,
-            "specificity": lambda t, p: sk_metrics.recall_score(~t, ~p),
-            "f_score": sk_metrics.f1_score
+            # "sensitivity": sk_metrics.recall_score,
+            # "specificity": lambda t, p: sk_metrics.recall_score(~t, ~p),
+            # "f_score": sk_metrics.f1_score
         }
 
     @property

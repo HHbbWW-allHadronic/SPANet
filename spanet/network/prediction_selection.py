@@ -44,15 +44,13 @@ def mask_3(flat_data, size, index, value):
     data[:, index, :] = value
     data[:, :, index] = value
 
-
-# @njit("void(float32[::1], int64, int64, float32)")
-# def mask_4(flat_data, size, index, value):
-#     data = flat_data.reshape((size, size, size, size))
-#     data[index, :, :, :] = value
-#     data[:, index, :, :] = value
-#     data[:, :, index, :] = value
-#     data[:, :, :, index] = value
-
+@njit("void(float32[::1], int64, int64, float32)")
+def mask_4(flat_data, size, index, value):
+    data = flat_data.reshape((size, size, size, size))
+    data[index, :, :, :] = value
+    data[:, index, :, :] = value
+    data[:, :, index, :] = value
+    data[:, :, :, index] = value
 
 # @njit("void(float32[::1], int64, int64, float32)")
 # def mask_5(flat_data, size, index, value):
@@ -108,8 +106,13 @@ def mask_jet(data, num_partons, max_jets, index, value):
         mask_2(data, max_jets, index, value)
     elif num_partons == 3:
         mask_3(data, max_jets, index, value)
+<<<<<<< HEAD
     # elif num_partons == 4:
     #     mask_4(data, max_jets, index, value)
+=======
+    elif num_partons == 4:
+        mask_4(data, max_jets, index, value)
+>>>>>>> origin/mp_branch
     # elif num_partons == 5:
     #     mask_5(data, max_jets, index, value)
     # elif num_partons == 6:
@@ -118,6 +121,11 @@ def mask_jet(data, num_partons, max_jets, index, value):
     #     mask_7(data, max_jets, index, value)
     # elif num_partons == 8:
     #     mask_8(data, max_jets, index, value)
+<<<<<<< HEAD
+=======
+    else:
+        raise NotImplementedError(f'mask_jet() with num_partons = {num_partons}')
+>>>>>>> origin/mp_branch
 
 
 @njit("int64[::1](int64, int64)")
