@@ -199,12 +199,21 @@ class Options(Namespace):
         # mean
         # -------------------------------------------------
         self.combine_pair_loss: str = 'min'
-
+	
         # The optimizer to use for trianing the network.
         # This must be a valid class in torch.optim or nvidia apex with 'apex' prefix.
         self.optimizer: str = "AdamW"
 
-        # Optimizer learning rate.
+	# Learning rate scheduler type.
+        # Options are:
+        # -------------------------------------------------
+        # cosine  : Cosine annealing with hard restarts (uses learning_rate_cycles)
+        # linear  : Linear decay with warmup
+        # plateau : ReduceLROnPlateau (adaptive, monitors validation metric)
+        # -------------------------------------------------
+        self.scheduler_type: str = "cosine"        
+
+	# Optimizer learning rate.
         self.learning_rate: float = 0.001
 
         # Gamma exponent for focal loss. Setting it to 0.0 will disable focal loss and use regular cross-entropy.
