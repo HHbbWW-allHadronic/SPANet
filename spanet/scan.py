@@ -32,7 +32,7 @@ separate, differently-configured reference run.
 
 Usage:
     python scan_optuna.py --run_config scan_run_config.json --n_trials 20
-    # or fully via CLI:
+    # or fully via CLI, same as run_hparam_scan.py:
     python scan_optuna.py --baseline HHbbVV_training.json \
         --event_file ... --training_file ... --validation_file ... \
         --log_dir ... --name optuna_scan --epochs 50 --seed 42 --n_trials 20
@@ -44,6 +44,7 @@ import os
 import re
 import subprocess
 import time
+from datetime import datetime
 
 import optuna
 
@@ -71,11 +72,27 @@ def find_run_version_dir(log_dir, run_name, before_versions):
     return None
 
 
+_DATASET_PATH_KEYS = {"event_info_file", "training_file", "validation_file", "testing_file"}
+
+
 def build_run_options(baseline_path, overrides, out_path):
     """Merge baseline JSON with this trial's suggested hyperparameters,
-    write the complete merged file. Does NOT mutate the baseline file."""
+    write the complete merged file. Does NOT mutate the baseline file.
+
+    Deliberately strips event_info_file/training_file/validation_file/
+    testing_file from the result, regardless of whether the baseline JSON
+    contains them -- these must ALWAYS come from the -ef/-tf/-vf CLI
+    flags (which train.py already applies before this file is layered on
+    top). Confirmed bug this fixes: train.py's own update_options() has
+    no reason to skip these keys, so if a stale baseline JSON still has
+    them, they'd silently overwrite whatever correct CLI-provided paths
+    were passed -- exactly what happened once already tonight (region4's
+    NO_BJET files getting loaded instead of the intended region2 dataset).
+    """
     with open(baseline_path) as f:
         merged = json.load(f)
+    for key in _DATASET_PATH_KEYS:
+        merged.pop(key, None)
     merged.update(overrides)
     with open(out_path, "w") as f:
         json.dump(merged, f, indent=4)
@@ -198,9 +215,116 @@ def make_objective(args, work_dir):
             "l2_penalty": trial.suggest_float("l2_penalty", 1e-5, 1e-3, log=True),
             "combine_pair_loss": trial.suggest_categorical("combine_pair_loss", ["min", "softmin", "mean"]),
             "focal_gamma": trial.suggest_float("focal_gamma", 0.0, 3.0),
+            "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
+            # Architecture parameters, added after excluding num_detector_layers/
+            # num_regression_layers/num_classification_layers (inert -- their
+            # paired loss scales are all 0.0 in the baseline) and
+            # initial_embedding_dim/transformer_dim_scale/position_embedding_dim
+            # (unclear dependencies on hidden_dim, not safe to sample blindly).
+            "num_encoder_layers": trial.suggest_int("num_encoder_layers", 2, 10),
+            "num_branch_embedding_layers": trial.suggest_int("num_branch_embedding_layers", 1, 8),
+            "num_branch_encoder_layers": trial.suggest_int("num_branch_encoder_layers", 1, 8),
+            "num_jet_embedding_layers": trial.suggest_int("num_jet_embedding_layers", 0, 4),
+            "num_jet_encoder_layers": trial.suggest_int("num_jet_encoder_layers", 0, 4),
+            # Constrained to {1,2,4,8} -- verified to divide every possible
+            # hidden_dim value (64-256, step 32) cleanly. hidden_dim's own
+            # true GCD across that range is 32, so this set is comfortably
+            # safe, not just barely sufficient.
+            "num_attention_heads": trial.suggest_categorical("num_attention_heads", [1, 2, 4, 8]),
         }
         return run_trial_with_pruning(trial, overrides, args, work_dir)
     return objective
+
+
+def save_summary_outputs(study, output_prefix):
+    """Writes the scan summary to both a .txt file and a presentation-ready
+    .png table, in addition to the normal console output. Hyperparameter
+    columns are derived dynamically from whatever the trials actually
+    scanned, rather than hardcoded -- stays correct if the search space
+    changes later without needing this function updated too."""
+    out_dir = os.path.dirname(output_prefix)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    param_names = []
+    for t in study.trials:
+        for k in t.params.keys():
+            if k not in param_names:
+                param_names.append(k)
+
+    def fmt_param(v):
+        if isinstance(v, float):
+            return f"{v:.4g}"
+        return str(v)
+
+    rows = []
+    for t in study.trials:
+        acc_str = f"{t.value:.4f}" if t.value is not None else "N/A"
+        row = [str(t.number), t.state.name, acc_str] + [
+            fmt_param(t.params.get(p, "")) for p in param_names
+        ]
+        rows.append(row)
+
+    headers = ["Trial", "State", "Best Acc"] + param_names
+
+    # --- .txt output ---
+    col_widths = [max(len(headers[i]), max((len(r[i]) for r in rows), default=0)) for i in range(len(headers))]
+    lines = []
+    lines.append("Optuna hyperparameter scan results")
+    lines.append("=" * (sum(col_widths) + 2 * len(col_widths)))
+    lines.append("  ".join(h.ljust(col_widths[i]) for i, h in enumerate(headers)))
+    lines.append("-" * (sum(col_widths) + 2 * len(col_widths)))
+    for r in rows:
+        lines.append("  ".join(r[i].ljust(col_widths[i]) for i in range(len(r))))
+    if study.best_trial is not None:
+        lines.append("")
+        lines.append(f"Best trial: #{study.best_trial.number}, accuracy={study.best_value:.4f}")
+        lines.append(f"Best params: {study.best_params}")
+
+    txt_path = f"{output_prefix}.txt"
+    with open(txt_path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"\nSaved summary text to: {txt_path}")
+
+    # --- .png output ---
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        n_rows = len(rows)
+        n_cols = len(headers)
+        fig_height = 0.4 * (n_rows + 1) + 0.6
+        fig_width = 1.3 * n_cols
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+        ax.axis("off")
+
+        table = ax.table(
+            cellText=rows, colLabels=headers, loc="center", cellLoc="center",
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(9)
+        table.scale(1, 1.5)
+
+        best_trial_number = str(study.best_trial.number) if study.best_trial is not None else None
+        for (row_idx, col_idx), cell in table.get_celld().items():
+            if row_idx == 0:
+                cell.set_facecolor("#2a78d6")
+                cell.set_text_props(color="white", weight="bold")
+            elif best_trial_number is not None and rows[row_idx - 1][0] == best_trial_number:
+                cell.set_facecolor("#e6f1fb")
+
+        title = "Optuna hyperparameter scan results"
+        if study.best_trial is not None:
+            title += f"  (best: trial #{best_trial_number}, acc={study.best_value:.4f})"
+        ax.set_title(title, fontsize=11, pad=12)
+
+        png_path = f"{output_prefix}.png"
+        plt.savefig(png_path, bbox_inches="tight", dpi=150)
+        plt.close(fig)
+        print(f"Saved summary image to: {png_path}")
+    except ImportError:
+        print("matplotlib not available -- skipped .png output (saved .txt only)")
 
 
 def main():
@@ -222,6 +346,7 @@ def main():
     parser.add_argument("--poll_interval", type=float, default=30.0, help="Seconds between checkpoint-directory polls while a trial is running")
     parser.add_argument("--startup_timeout", type=int, default=300, help="Seconds to wait for a trial's version directory to appear before giving up. Dataset loading + feature normalization can genuinely take a while on a cold start -- this is deliberately generous, and now that stdout/stderr are captured to a log file, a real crash gets detected and reported immediately regardless of this value, rather than waiting out the full timeout.")
     parser.add_argument("--study_db", default=None, help="If set, path to a SQLite file for persisting the study (allows resuming across sessions). Otherwise the study exists only in memory for this run.")
+    parser.add_argument("--summary_output", default=None, help="Path prefix for saved summary files -- writes <prefix>.txt and <prefix>.png. Defaults to '<work_dir>/scan_summary' if not given.")
     args = parser.parse_args()
 
     if args.run_config:
@@ -243,6 +368,8 @@ def main():
         args.work_dir = "./optuna_scan_configs"
     if args.n_trials is None:
         args.n_trials = 18
+    if args.summary_output is None:
+        args.summary_output = os.path.join(args.work_dir, "scan_summary")
 
     required_fields = ["baseline", "event_file", "training_file", "validation_file", "log_dir"]
     missing = [f for f in required_fields if getattr(args, f) is None]
@@ -274,11 +401,26 @@ def main():
         "l2_penalty": baseline_values.get("l2_penalty", 0.0002),
         "combine_pair_loss": baseline_values.get("combine_pair_loss", "softmin"),
         "focal_gamma": baseline_values.get("focal_gamma", 1.0),
+        "learning_rate": baseline_values.get("learning_rate", 0.001),
+        "num_encoder_layers": baseline_values.get("num_encoder_layers", 6),
+        "num_branch_embedding_layers": baseline_values.get("num_branch_embedding_layers", 5),
+        "num_branch_encoder_layers": baseline_values.get("num_branch_encoder_layers", 5),
+        "num_jet_embedding_layers": baseline_values.get("num_jet_embedding_layers", 0),
+        "num_jet_encoder_layers": baseline_values.get("num_jet_encoder_layers", 1),
+        "num_attention_heads": baseline_values.get("num_attention_heads", 4),
     }
     study.enqueue_trial(baseline_trial_params)
 
     objective = make_objective(args, args.work_dir)
-    study.optimize(objective, n_trials=args.n_trials)
+    # catch=(RuntimeError,) is critical here: without it, ANY RuntimeError
+    # raised from a single trial (e.g. train.py crashing, or SPANet's own
+    # "Assignment loss has diverged!" guard firing on an unstable
+    # hyperparameter combination) stops the ENTIRE study immediately,
+    # losing every trial that would have come after it -- confirmed
+    # directly against Optuna's actual default behavior, not assumed.
+    # optuna.TrialPruned (used for pruning) is handled separately by
+    # Optuna itself regardless of this setting.
+    study.optimize(objective, n_trials=args.n_trials, catch=(RuntimeError,))
 
     print("\n" + "=" * 90)
     print("SUMMARY: Optuna hyperparameter scan results")
@@ -293,6 +435,14 @@ def main():
         print(f"Best trial: #{study.best_trial.number}, accuracy={study.best_value:.4f}")
         print(f"Best params: {study.best_params}")
     print("=" * 90)
+
+    # Timestamp appended regardless of whether summary_output came from the
+    # default or was explicitly given -- so repeated runs never silently
+    # overwrite a previous run's saved summary, even if --summary_output
+    # points at the same directory every time.
+    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    timestamped_summary_output = f"{args.summary_output}_{run_timestamp}"
+    save_summary_outputs(study, timestamped_summary_output)
 
     return study
 
