@@ -131,26 +131,32 @@ class JetReconstructionBase(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = None
+
         if 'apex' in self.options.optimizer:
             try:
                 # noinspection PyUnresolvedReferences
                 import apex.optimizers
+
                 if self.options.optimizer == 'apex_adam':
                     optimizer = apex.optimizers.FusedAdam
+
                 elif self.options.optimizer == 'apex_lamb':
                     optimizer = apex.optimizers.FusedLAMB
+
                 else:
                     optimizer = apex.optimizers.FusedSGD
+
             except ImportError:
                 pass
+
         else:
             optimizer = getattr(torch.optim, self.options.optimizer)
-    
+
         if optimizer is None:
             print(f"Unable to load desired optimizer: {self.options.optimizer}.")
             print(f"Using pytorch AdamW as a default.")
             optimizer = torch.optim.AdamW
-    
+
         decay_mask = ["bias", "LayerNorm.weight"]
         optimizer_grouped_parameters = [
             {
@@ -164,55 +170,31 @@ class JetReconstructionBase(pl.LightningModule):
                 "weight_decay": 0.0,
             },
         ]
-    
+
         optimizer = optimizer(optimizer_grouped_parameters, lr=self.options.learning_rate)
-    
-        if self.options.scheduler_type == "plateau":
-            print("Using ReduceLROnPlateau scheduler.")
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer,
-                mode='max',
-                factor=0.5,
-                patience=10,
-                min_lr=1e-6,
-                verbose=True
-            )
-            scheduler_config = {
-                'scheduler': scheduler,
-                'monitor': 'validation_average_jet_accuracy',
-                'interval': 'epoch',
-                'frequency': 1,
-                'strict': True
-            }
-        elif self.options.scheduler_type == "linear":
-            print("Using linear decay with warmup scheduler.")
+
+        if self.options.learning_rate_cycles < 1:
             scheduler = get_linear_schedule_with_warmup(
-                optimizer,
-                num_warmup_steps=self.warmup_steps,
-                num_training_steps=self.total_steps
-            )
-            scheduler_config = {
-                'scheduler': scheduler,
-                'interval': 'step',
-                'frequency': 1
-            }
+                 optimizer,
+                 num_warmup_steps=self.warmup_steps,
+                 num_training_steps=self.total_steps
+             )
         else:
-            # Default: cosine annealing with hard restarts
-            print(f"Using cosine annealing scheduler with {self.options.learning_rate_cycles} cycle(s).")
             scheduler = get_cosine_with_hard_restarts_schedule_with_warmup(
                 optimizer,
                 num_warmup_steps=self.warmup_steps,
                 num_training_steps=self.total_steps,
-                num_cycles=max(1, self.options.learning_rate_cycles)
+                num_cycles=self.options.learning_rate_cycles
             )
-            scheduler_config = {
-                'scheduler': scheduler,
-                'interval': 'step',
-                'frequency': 1
-            }
-    
-        return [optimizer], [scheduler_config]
-    
+
+        scheduler = {
+            'scheduler': scheduler,
+            'interval': 'step',
+            'frequency': 1
+        }
+
+        return [optimizer], [scheduler]
+
     def train_dataloader(self) -> DataLoader:
         return self.dataloader(self.training_dataset, shuffle=True, drop_last=True, **self.dataloader_options)
 

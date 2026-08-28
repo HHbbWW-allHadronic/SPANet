@@ -4,7 +4,7 @@
     "training_file": "/uscms/home/gvetters/nobackup/SPANet_dr_20260407/h5_files/DEDUPED_files/tiered_pt_cut/LABEL/OSCA_PROCESSED_HHbbWW_sample_region2_6jet_1null_tiered-FRESH_FILE-tag_LABEL-DEDUPED-train.h5",
     "validation_file": "/uscms/home/gvetters/nobackup/SPANet_dr_20260407/h5_files/DEDUPED_files/tiered_pt_cut/LABEL/OSCA_PROCESSED_HHbbWW_sample_region2_6jet_1null_tiered-FRESH_FILE-tag_LABEL-DEDUPED-validate.h5",
     "log_dir": "/eos/uscms/store/user/gavetter/spanet_scan_output1",
-    "name": "optuna_scan",
+    "name": "optuna_scan_8-26-26",
     "epochs": 50,
     "seed": 42,
     "n_trials": 25

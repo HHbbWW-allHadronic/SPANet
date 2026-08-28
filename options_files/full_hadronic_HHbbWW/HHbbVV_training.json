@@ -27,11 +27,11 @@
     "skip_connections": true,
     "initial_embedding_skip_connections": true,
 
-    "event_info_file": "/uscms/home/gvetters/nobackup/SPANet_dr_20260407/HHbbVV_signal-tag_score.yaml",
+    "event_info_file": "/uscms/home/gvetters/nobackup/SPANet_dr_20260407/SPANet/event_files/full_hadronic_HHbbWW/HHbbVV_signal-tag_label.yaml",
    
-    "training_file": "/uscms/home/gvetters/nobackup/SPANet_dr_20260407/h5_files/DEDUPED_files/flat_pt_cut/SCORE/OSCA_PROCESSED_HHbbWW_sample_region4_7jet_1null_flat-FRESH_FILE-tag_SCORE-DEDUPED-train.h5",
+    "training_file": "/uscms/home/gvetters/nobackup/SPANet_dr_20260407/h5_files/DEDUPED_files/tiered_pt_cut/LABEL/OSCA_PROCESSED_HHbbWW_sample_region2_6jet_1null_tiered-FRESH_FILE-tag_LABEL-DEDUPED-train.h5",
    
-    "validation_file": "/uscms/home/gvetters/nobackup/SPANet_dr_20260407/h5_files/DEDUPED_files/flat_pt_cut/SCORE/OSCA_PROCESSED_HHbbWW_sample_region4_7jet_1null_flat-FRESH_FILE-tag_SCORE-DEDUPED-validate.h5",
+    "validation_file": "/uscms/home/gvetters/nobackup/SPANet_dr_20260407/h5_files/DEDUPED_files/tiered_pt_cut/LABEL/OSCA_PROCESSED_HHbbWW_sample_region2_6jet_1null_tiered-FRESH_FILE-tag_LABEL-DEDUPED-validate.h5",
      
     "normalize_features": true,
     "limit_to_num_jets": 0,
@@ -41,7 +41,7 @@
 
     "dataset_limit": 1.0,
     "train_validation_split": 1.00,
-    "batch_size": 128,
+    "batch_size": 256,
     "num_dataloader_workers": 16,
 
     "mask_sequence_vectors": true,
@@ -54,7 +54,7 @@
 
     "assignment_loss_scale": 1.0,
     "detection_loss_scale": 0.0,
-    "kl_loss_scale": 1.0,
+    "kl_loss_scale": 0.0,
     "regression_loss_scale": 0.0,
     "classification_loss_scale": 0.0,
 

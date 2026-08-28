@@ -236,6 +236,64 @@ def make_objective(args, work_dir):
     return objective
 
 
+def save_param_importance_plot(study, output_path):
+    """Bar chart of each hyperparameter's estimated importance, using
+    optuna.importance.get_param_importances() directly -- NOT
+    optuna.visualization.plot_param_importances(), which returns a
+    Plotly figure. Saving THAT to a static image requires kaleido, and
+    kaleido v1+ requires an actual Chrome installation to render at all
+    -- confirmed directly to fail with ChromeNotFoundError in a headless
+    environment. get_param_importances() returns a plain dict with no
+    plotting library involved, so rendering it ourselves with
+    matplotlib (already a proven dependency here) avoids that entirely.
+    Requires at least a handful of completed trials to be meaningful --
+    with very few trials this will run but the values won't mean much.
+    """
+    import optuna
+    try:
+        importances = optuna.importance.get_param_importances(study)
+    except Exception as e:
+        print(f"Could not compute parameter importances (often just means too few completed "
+              f"trials yet): {e}")
+        return
+
+    if not importances:
+        print("No parameter importances to plot (no completed trials?)")
+        return
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        out_dir = os.path.dirname(output_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+
+        names = list(importances.keys())
+        values = list(importances.values())
+        # Sort ascending so the most important parameter ends up at the
+        # TOP of a horizontal bar chart, matching how these are
+        # conventionally read.
+        order = sorted(range(len(names)), key=lambda i: values[i])
+        names = [names[i] for i in order]
+        values = [values[i] for i in order]
+
+        fig_height = max(0.35 * len(names) + 1.0, 2.5)
+        fig, ax = plt.subplots(figsize=(8, fig_height))
+        ax.barh(names, values, color="#2a78d6")
+        ax.set_xlabel("Relative importance")
+        ax.set_title("Optuna hyperparameter importance")
+        for i, v in enumerate(values):
+            ax.text(v, i, f" {v:.3f}", va="center", fontsize=8)
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=300)
+        plt.close(fig)
+        print(f"Saved parameter importance plot to: {output_path}")
+    except ImportError:
+        print("matplotlib not available -- skipped parameter importance plot")
+
+
 def save_summary_outputs(study, output_prefix):
     """Writes the scan summary to both a .txt file and a presentation-ready
     .png table, in addition to the normal console output. Hyperparameter
@@ -294,13 +352,37 @@ def save_summary_outputs(study, output_prefix):
 
         n_rows = len(rows)
         n_cols = len(headers)
+
+        # Per-column content length (header text OR longest data value in
+        # that column, whichever is longer) -- so a column like
+        # 'num_branch_embedding_layers' correctly gets more width than
+        # 'dropout', rather than every column getting the same fixed
+        # slice regardless of how long its actual content is.
+        col_content_lengths = []
+        for col_idx, header in enumerate(headers):
+            max_len = len(header)
+            for row in rows:
+                max_len = max(max_len, len(row[col_idx]))
+            col_content_lengths.append(max_len)
+        total_content_length = sum(col_content_lengths)
+        col_widths = [length / total_content_length for length in col_content_lengths]
+
+        # Total figure width scaled to the REAL total content length, not
+        # a flat per-column count -- with many long-named columns (13+
+        # hyperparameters), a flat multiplier stayed too narrow even
+        # though individual columns were proportioned correctly, since
+        # proportional widths alone can't fix a canvas that's too small
+        # overall. 0.11in/char is empirical, tuned to the fontsize below;
+        # floored at 10in so a small scan (few short columns) doesn't
+        # render a tiny, cramped table either.
         fig_height = 0.4 * (n_rows + 1) + 0.6
-        fig_width = 1.3 * n_cols
+        fig_width = max(total_content_length * 0.11, 10)
         fig, ax = plt.subplots(figsize=(fig_width, fig_height))
         ax.axis("off")
 
         table = ax.table(
-            cellText=rows, colLabels=headers, loc="center", cellLoc="center",
+            cellText=rows, colLabels=headers, colWidths=col_widths,
+            loc="center", cellLoc="center",
         )
         table.auto_set_font_size(False)
         table.set_fontsize(9)
@@ -320,7 +402,7 @@ def save_summary_outputs(study, output_prefix):
         ax.set_title(title, fontsize=11, pad=12)
 
         png_path = f"{output_prefix}.png"
-        plt.savefig(png_path, bbox_inches="tight", dpi=150)
+        plt.savefig(png_path, bbox_inches="tight", dpi=300)
         plt.close(fig)
         print(f"Saved summary image to: {png_path}")
     except ImportError:
@@ -443,6 +525,7 @@ def main():
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     timestamped_summary_output = f"{args.summary_output}_{run_timestamp}"
     save_summary_outputs(study, timestamped_summary_output)
+    save_param_importance_plot(study, f"{timestamped_summary_output}_importance.png")
 
     return study
 
