@@ -156,6 +156,7 @@ class Batch(NamedTuple):
     assignment_targets: Tuple[AssignmentTargets, ...]
     regression_targets: Dict[str, Tensor]
     classification_targets: Dict[str, Tensor]
+    event_weight: Optional[Tensor] = None
 
 
 class Outputs(NamedTuple):

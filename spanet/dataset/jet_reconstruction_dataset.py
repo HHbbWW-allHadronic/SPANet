@@ -111,6 +111,7 @@ class JetReconstructionDataset(Dataset):
             self.assignments = self.load_assignments(file, limit_index)
             self.regressions, self.regression_types = self.load_regressions(file, limit_index)
             self.classifications = self.load_classifications(file, limit_index)
+            self.event_weights = self.load_event_weights(file, limit_index)
 
             # Update size information after loading and limiting dataset.
             self.num_events = limit_index.shape[0]
@@ -229,6 +230,37 @@ class JetReconstructionDataset(Dataset):
             targets[event_particle] = (target_data, target_mask, target_weight)
 
         return targets
+
+    def load_event_weights(self, hdf5_file: h5py.File, limit_index: np.ndarray) -> Tensor:
+        """ Load the physical per-event weights (WEIGHTS/physical, written by SaveSPANetH5(write_weights=True)).
+
+        These are NOT used in any loss. They only travel with the batch (Batch.event_weight) so that validation can
+        compute weighted yields. Falls back to ones when the file has no weights.
+        """
+        if "WEIGHTS" in hdf5_file and "physical" in hdf5_file["WEIGHTS"]:
+            weights = torch.from_numpy(hdf5_file["WEIGHTS"]["physical"][:][limit_index].astype(np.float64))
+            if not torch.isfinite(weights).all():
+                raise ValueError(f"{self.data_file}: WEIGHTS/physical contains NaN/inf")
+            self.has_event_weights = True
+        else:
+            print("Warning: no WEIGHTS/physical in the dataset, creating ones event weights")
+            weights = torch.ones(len(limit_index), dtype=torch.float64)
+            self.has_event_weights = False
+
+        self.print_class_yields(weights)
+        return weights.float()
+
+    def print_class_yields(self, weights: Tensor):
+        """ Sanity check printout: raw count and weighted yield per process_label class. """
+        key = next((k for k in self.classifications if k.endswith("process_label")), None)
+        if key is None:
+            return
+        labels = self.classifications[key]
+        print(f"Event weights ({'physical' if self.has_event_weights else 'ones'}), per {key}:")
+        for label in torch.unique(labels).tolist():
+            selected = labels == label
+            print(f"  class {label}: n={int(selected.sum()):>10d}  sum(w)={weights[selected].sum().item():.6g}  "
+                  f"mean(w)={weights[selected].mean().item():.4g}")
 
     def tree_key_data(self, hdf5_file: h5py.File, limit_index, root, group, index):
         key = "/".join((*group, index))
@@ -432,6 +464,8 @@ class JetReconstructionDataset(Dataset):
         for key, classifications in self.classifications.items():
             self.classifications[key] = classifications[event_mask]
 
+        self.event_weights = self.event_weights[event_mask]
+
         self.num_events = event_mask.sum().item()
         self.num_vectors = sum(source.num_vectors() for source in self.sources.values())
 
@@ -479,5 +513,6 @@ class JetReconstructionDataset(Dataset):
             self.num_vectors[item],
             assignments,
             regressions,
-            classifications
+            classifications,
+            self.event_weights[item]
         )

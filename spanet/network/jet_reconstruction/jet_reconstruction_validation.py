@@ -10,9 +10,23 @@ from sklearn import metrics as sk_metrics
 from spanet.options import Options
 from spanet.dataset.evaluator import SymmetricEvaluator
 from spanet.network.jet_reconstruction.jet_reconstruction_network import JetReconstructionNetwork
+from spanet.network.jet_reconstruction.significance import significance_metrics
 
 
 class JetReconstructionValidation(JetReconstructionNetwork):
+    # ---- Weighted significance metric (S/sqrt(B) from detection scores), see significance.py ----
+    # Event weights come from WEIGHTS/physical and must be at the FULL luminosity for the validation set. Our validate
+    # file is a random 20% of the signal+ttbar file, so its weights sum to only 20% of the full-lumi yield.
+    #   "auto" (default): per-class factor = (sum w over train + validation) / (sum w over validation), computed once
+    #                     from the datasets. Puts each class's validation yield at its full-sample total, for ANY split
+    #                     fraction. Assumes train + validation together are the whole sample: NOT valid if training
+    #                     uses only part of its file (--limit_dataset) -- a warning is printed then.
+    #   a number:         one constant for every event (e.g. 5.0 for a 20% split, 1.0 if the weights are already full-lumi).
+    SIGNIFICANCE_WEIGHT_SCALE = "auto"
+    SIGNIFICANCE_SIGNAL_LABEL = 1        # CLASSIFICATIONS/EVENT/process_label: 0 QCD, 1 signal, 2 ttbar
+    SIGNIFICANCE_MIN_B_RAW = 5           # skip bins / cuts with fewer raw background events than this
+    SIGNIFICANCE_PRIMARY = "signif/joint/binned_Z"   # also logged as `validation_significance` (monitor this one)
+
     def __init__(self, options: Options, torch_script: bool = False):
         super(JetReconstructionValidation, self).__init__(options, torch_script)
         self.evaluator = SymmetricEvaluator(self.training_dataset.event_info)
@@ -20,6 +34,9 @@ class JetReconstructionValidation(JetReconstructionNetwork):
             self.particle_index_tensor_np = self.particle_index_tensor.cpu().detach().numpy()
             self.particle_weights_tensor_np = self.particle_weights_tensor.cpu().detach().numpy()
         # self.validation_step_metrics_outputs = []
+        self._sens_buffer = []
+        self._sens_summary_printed = False
+        self._sens_class_scales = None
 
     @property
     def particle_metrics(self) -> Dict[str, Callable[[np.ndarray, np.ndarray], float]]:
@@ -116,7 +133,8 @@ class JetReconstructionValidation(JetReconstructionNetwork):
 
     def validation_step(self, batch, batch_idx) -> Dict[str, np.float32]:
         # Run the base prediction step
-        sources, num_jets, targets, regression_targets, classification_targets = batch
+        sources, num_jets, targets, regression_targets, classification_targets = batch[:5]
+        event_weights = getattr(batch, "event_weight", None)
         jet_predictions, particle_scores, regressions, classifications = self.predict(sources)
 
         batch_size = num_jets.shape[0]
@@ -140,6 +158,8 @@ class JetReconstructionValidation(JetReconstructionNetwork):
             key: value.detach().cpu().numpy()
             for key, value in classification_targets.items()
         }
+
+        self.buffer_significance_inputs(particle_scores, classification_targets, event_weights, batch_size)
 
         metrics = self.evaluator.full_report_string(jet_predictions, stacked_targets, stacked_masks, prefix="Purity/")
 
@@ -182,6 +202,140 @@ class JetReconstructionValidation(JetReconstructionNetwork):
     def test_step(self, batch, batch_idx):
         return self.validation_step(batch, batch_idx)
 
+    # ------------------------------------------------------------------------------------------------------------
+    # Weighted significance: events are only buffered per step; S/sqrt(B) needs the WHOLE validation set, so it is
+    # computed once in on_validation_epoch_end (self.log(on_epoch=True) would just average per-batch values).
+    # Signal and background being separate events is irrelevant: the truth label splits them, order does not matter.
+    # ------------------------------------------------------------------------------------------------------------
+    def _detection_names(self, num_targets):
+        try:
+            names = list(self.training_dataset.event_info.product_particles.keys())
+        except AttributeError:
+            names = []
+        return [names[i] if i < len(names) else f"t{i}" for i in range(num_targets)]
+
+    def buffer_significance_inputs(self, particle_scores, classification_targets, event_weights, batch_size):
+        label_key = next((k for k in classification_targets if k.endswith("process_label")), None)
+        if label_key is None or event_weights is None:
+            if not getattr(self, "_sens_warned", False):
+                self._sens_warned = True
+                warnings.warn(
+                    "Significance metric DISABLED: "
+                    + ("no 'process_label' in the classification targets (is it listed in the event yaml?)"
+                       if label_key is None else "the batch has no event_weight (Batch/dataset not patched?)")
+                    + " -- validation_significance will be logged as 0.0")
+            return
+
+        self._sens_buffer.append((
+            np.asarray(particle_scores, dtype=np.float64).reshape(-1, batch_size),
+            np.asarray(classification_targets[label_key]).reshape(-1),
+            event_weights.detach().cpu().numpy().astype(np.float64).reshape(-1),
+        ))
+
+    @staticmethod
+    def _to_np(x):
+        return x.detach().cpu().numpy() if hasattr(x, "detach") else np.asarray(x)
+
+    def _auto_class_scales(self):
+        """{label: (sum w train + sum w validation) / sum w validation}, from the two datasets (cached)."""
+        if self._sens_class_scales is not None:
+            return self._sens_class_scales
+
+        scales = {}
+        try:
+            def label_and_weight(dataset):
+                key = next(k for k in dataset.classifications if k.endswith("process_label"))
+                return self._to_np(dataset.classifications[key]).reshape(-1), self._to_np(dataset.event_weights).astype(np.float64)
+
+            lab_v, w_v = label_and_weight(self.validation_dataset)
+            lab_t, w_t = label_and_weight(self.training_dataset)
+            for c in np.unique(lab_v):
+                sv, st = w_v[lab_v == c].sum(), w_t[lab_t == c].sum()
+                scales[int(c)] = float((st + sv) / sv) if sv != 0 else 1.0
+        except Exception as e:  # never let the metric kill a training run
+            warnings.warn(f"Significance: could not compute the automatic weight scale ({e!r}); using 1.0 -- "
+                          f"set SIGNIFICANCE_WEIGHT_SCALE to a number")
+            scales = {}
+
+        limit = getattr(getattr(self, "options", None), "dataset_limit", 1.0)
+        if limit not in (None, 1.0, 1):
+            warnings.warn(f"Significance: dataset_limit={limit} -- the automatic weight scale assumes train + validation "
+                          f"are the whole sample, so yields will be too small. Set SIGNIFICANCE_WEIGHT_SCALE by hand.")
+        self._sens_class_scales = scales
+        return scales
+
+    def _weight_scale_array(self, labels, testing=False):
+        if testing:
+            return np.ones(len(labels))                      # test dataset is not the complement of train
+        if isinstance(self.SIGNIFICANCE_WEIGHT_SCALE, str):
+            scales = self._auto_class_scales()
+            return np.array([scales.get(int(c), 1.0) for c in labels])
+        return np.full(len(labels), float(self.SIGNIFICANCE_WEIGHT_SCALE))
+
+    def compute_significance(self, testing=False):
+        if not self._sens_buffer:
+            return {}
+
+        scores = np.concatenate([b[0] for b in self._sens_buffer], axis=1)      # (num_targets, N)
+        labels = np.concatenate([b[1] for b in self._sens_buffer])
+        weights = np.concatenate([b[2] for b in self._sens_buffer]) * self._weight_scale_array(labels, testing)
+        self._sens_buffer = []
+
+        is_signal = labels == self.SIGNIFICANCE_SIGNAL_LABEL
+        # Print once, at the first REAL validation epoch -- not in Lightning's 2-batch sanity check, which only sees a
+        # few hundred events and would show meaningless partial sums.
+        try:
+            sanity = bool(self.trainer.sanity_checking)
+        except Exception:
+            sanity = False
+        if not self._sens_summary_printed and not sanity:
+            self._sens_summary_printed = True
+            if isinstance(self.SIGNIFICANCE_WEIGHT_SCALE, str) and not testing:
+                print("Significance weight scale (auto, per class): "
+                      + ", ".join(f"class {c}: x{v:.4f}" for c, v in sorted(self._auto_class_scales().items())))
+            print("Significance validation: " + ", ".join(
+                f"class {c}: n={int((labels == c).sum())} sum(w)={weights[labels == c].sum():.4g}"
+                for c in np.unique(labels)))
+        if is_signal.sum() == 0 or (~is_signal).sum() == 0:
+            return {}
+
+        names = self._detection_names(scores.shape[0])
+        score_sets = {name: scores[i] for i, name in enumerate(names)}
+        score_sets["joint"] = np.prod(scores, axis=0) ** (1.0 / scores.shape[0])   # geometric mean of all detections, in [0, 1]
+
+        metrics = significance_metrics(score_sets, is_signal, weights, min_b_raw=self.SIGNIFICANCE_MIN_B_RAW)
+        if self.SIGNIFICANCE_PRIMARY in metrics:
+            metrics["validation_significance"] = metrics[self.SIGNIFICANCE_PRIMARY]
+        return metrics
+
+    def _log_significance(self, testing=False):
+        metrics = self.compute_significance(testing)
+        for name, value in metrics.items():
+            if name != "validation_significance" and not np.isnan(value):
+                self.log(name, float(value), sync_dist=False)
+
+        # ModelCheckpoint(monitor="validation_significance") raises if the key is missing from the logged metrics, so
+        # it is ALWAYS logged: 0.0 when it could not be computed (no signal / no background in the buffer, or no bin
+        # with enough raw background events).
+        primary = metrics.get("validation_significance", float("nan"))
+        self.log("validation_significance", float(primary) if np.isfinite(primary) else 0.0, sync_dist=False)
+
+    def on_validation_epoch_start(self):
+        super().on_validation_epoch_start()
+        self._sens_buffer = []
+
+    def on_validation_epoch_end(self):
+        super().on_validation_epoch_end()
+        self._log_significance()
+
+    def on_test_epoch_start(self):
+        super().on_test_epoch_start()
+        self._sens_buffer = []
+
+    def on_test_epoch_end(self):
+        super().on_test_epoch_end()
+        self._log_significance(testing=True)
+
 #    def on_validation_epoch_end(self):
 #        # merge metrics from different mini batches into one dict
 #        metrics_merged = defaultdict(list) 
@@ -200,5 +354,3 @@ class JetReconstructionValidation(JetReconstructionNetwork):
 #                self.log(name, value, sync_dist=True)
 #
 #        self.validation_step_metrics_outputs.clear()
-
-
