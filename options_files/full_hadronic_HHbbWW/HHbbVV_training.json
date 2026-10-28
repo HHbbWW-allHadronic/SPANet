@@ -1,5 +1,5 @@
 {
-    "hidden_dim": 128,
+    "hidden_dim": 64,
     "transformer_dim_scale": 2.0,
     "initial_embedding_dim": 16,
     "position_embedding_dim": 32,
@@ -29,9 +29,9 @@
 
     "event_info_file": "/uscms/home/gvetters/nobackup/SPANet_dr_20260407/SPANet/event_files/full_hadronic_HHbbWW/HHbbVV_signal-tag_label.yaml",
    
-    "training_file": "/uscms/home/gvetters/nobackup/SPANet_dr_20260407/h5_files/DEDUPED_files/tiered_pt_cut/LABEL/OSCA_PROCESSED_HHbbWW_sample_region2_6jet_1null_tiered-FRESH_FILE-tag_LABEL-DEDUPED-train.h5",
+    "training_file": "/uscms/home/gvetters/nobackup/SPANet_dr_20260407/h5_files/DEDUPED_files/tiered_pt_cut/LABEL/OSCA_PROCESSED_HHbbWW_sample_region5_9jet_1null_tiered-tag_LABEL-ALMOST_ALL_SIGNAL_PLUS_ttbar_QCD-WEIGHTED-train.h5",
    
-    "validation_file": "/uscms/home/gvetters/nobackup/SPANet_dr_20260407/h5_files/DEDUPED_files/tiered_pt_cut/LABEL/OSCA_PROCESSED_HHbbWW_sample_region2_6jet_1null_tiered-FRESH_FILE-tag_LABEL-DEDUPED-validate.h5",
+    "validation_file": "/uscms/home/gvetters/nobackup/SPANet_dr_20260407/h5_files/DEDUPED_files/tiered_pt_cut/LABEL/OSCA_PROCESSED_HHbbWW_sample_region5_9jet_1null_tiered-tag_LABEL-ALMOST_ALL_SIGNAL_PLUS_ttbar_QCD-WEIGHTED-validate.h5",
      
     "normalize_features": true,
     "limit_to_num_jets": 0,
@@ -41,28 +41,28 @@
 
     "dataset_limit": 1.0,
     "train_validation_split": 1.00,
-    "batch_size": 256,
-    "num_dataloader_workers": 16,
+    "batch_size": 1024,
+    "num_dataloader_workers": 4,
 
     "mask_sequence_vectors": true,
     "combine_pair_loss": "softmin",
     "optimizer": "AdamW",
-    "focal_gamma": 1.0,
-    "learning_rate": 0.0010,
+    "focal_gamma": 1.469,
+    "learning_rate": 0.000933,
     "learning_rate_cycles": 1,
     "learning_rate_warmup_epochs": 1.0,
 
     "assignment_loss_scale": 1.0,
-    "detection_loss_scale": 0.0,
+    "detection_loss_scale": 1.0,
     "kl_loss_scale": 0.0,
     "regression_loss_scale": 0.0,
     "classification_loss_scale": 0.0,
 
-    "l2_penalty": 0.0002,
-    "gradient_clip": 0.0,
-    "dropout": 0.2,
+    "l2_penalty": 0.000583,
+    "gradient_clip": 1.0,
+    "dropout": 0.0512,
  
-    "epochs": 150,
+    "epochs": 30,
     "num_gpu": 1,
     "verbose_output": true
 }

@@ -26,6 +26,20 @@ from pytorch_lightning.callbacks import (
 from spanet import JetReconstructionModel, Options
 
 
+class TaggedModelCheckpoint(ModelCheckpoint):
+    """ModelCheckpoint with an extra `tag` in its state key. Lightning refuses two ModelCheckpoints with the same
+    state key (monitor + mode + every_n_epochs), e.g. a per-epoch save-everything callback next to a per-epoch
+    top-k callback on the same metric. The tag makes each one unique."""
+
+    def __init__(self, *args, tag: str = "", **kwargs):
+        super().__init__(*args, **kwargs)
+        self._tag = tag
+
+    @property
+    def state_key(self) -> str:
+        return f"{super().state_key}[{self._tag}]"
+
+
 def set_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
@@ -198,22 +212,47 @@ def main(
 
     # Create the checkpoints for this training run. Both track `validation_significance` (weighted S/sqrt(B) from the
     # detection scores, logged by JetReconstructionValidation) instead of validation_average_jet_accuracy.
-    #  1) periodic: every 10 epochs, keep all (as before) -- the filename now carries the significance.
-    #  2) best: every epoch, keep the 3 best by significance. Epoch-to-epoch values are noisy (a few heavy ttbar rows
-    #     can move them), so look at the curve in TensorBoard as well before trusting a single "best" epoch.
+    #  1) periodic: every epoch, keep all (weights only) -- the filename carries the significance.
+    #  2) best / bestEff / bestMass: every epoch, keep the 3 best by the score-binned, signal-efficiency-binned and
+    #     mass-binned significance respectively (one training, three selection rules). Epoch-to-epoch values are noisy
+    #     (a few heavy ttbar rows can move them), so look at the curve in TensorBoard as well before trusting a single "best" epoch.
     callbacks = [
-        ModelCheckpoint(
+        TaggedModelCheckpoint(
+            tag="every-epoch",
             verbose=options.verbose_output,
             filename='{epoch}-{step}-{validation_significance:.5f}',
             monitor='validation_significance',
             save_top_k=-1,
-            every_n_epochs=10,
+            every_n_epochs=1,            # every epoch, so any binning can be re-evaluated offline (was 10)
+            save_weights_only=True,      # weights are enough for dump/export; keeps 30 files small (cannot resume from these)
             mode='max',
         ),
-        ModelCheckpoint(
+        # Method 1: score bins (validation_significance = SIGNIFICANCE_PRIMARY in the hook)
+        TaggedModelCheckpoint(
+            tag="best-score",
             verbose=options.verbose_output,
             filename='best-{epoch}-{step}-{validation_significance:.5f}',
             monitor='validation_significance',
+            save_top_k=3,
+            every_n_epochs=1,
+            mode='max',
+        ),
+        # Method 2: equal signal-efficiency bins
+        TaggedModelCheckpoint(
+            tag="best-eff",
+            verbose=options.verbose_output,
+            filename='bestEff-{epoch}-{step}-{validation_significance_eff:.5f}',
+            monitor='validation_significance_eff',
+            save_top_k=3,
+            every_n_epochs=1,
+            mode='max',
+        ),
+        # Method 3: bins in the predicted masses only (5 x 5 grid in m_H1, m_W1; no score)
+        TaggedModelCheckpoint(
+            tag="best-mass",
+            verbose=options.verbose_output,
+            filename='bestMass-{epoch}-{step}-{validation_significance_mass:.5f}',
+            monitor='validation_significance_mass',
             save_top_k=3,
             every_n_epochs=1,
             mode='max',

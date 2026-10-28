@@ -10,7 +10,9 @@ from sklearn import metrics as sk_metrics
 from spanet.options import Options
 from spanet.dataset.evaluator import SymmetricEvaluator
 from spanet.network.jet_reconstruction.jet_reconstruction_network import JetReconstructionNetwork
-from spanet.network.jet_reconstruction.significance import significance_metrics
+from spanet.network.jet_reconstruction.significance import (
+    significance_metrics, find_kinematic_columns, pair_invariant_mass,
+)
 
 
 class JetReconstructionValidation(JetReconstructionNetwork):
@@ -26,6 +28,15 @@ class JetReconstructionValidation(JetReconstructionNetwork):
     SIGNIFICANCE_SIGNAL_LABEL = 1        # CLASSIFICATIONS/EVENT/process_label: 0 QCD, 1 signal, 2 ttbar
     SIGNIFICANCE_MIN_B_RAW = 5           # skip bins / cuts with fewer raw background events than this
     SIGNIFICANCE_PRIMARY = "signif/joint/binned_Z"   # also logged as `validation_significance` (monitor this one)
+    # Method 3: invariant masses of the jet pairs SPANet itself assigned (m_H1, m_W1), used only for the mass-binned
+    # variants signif/mass/*. Needs pt, eta, phi and e (or mass) among the Source features of the event yaml.
+    SIGNIFICANCE_MASSES = True
+    # Method 2 (equal signal-efficiency bins) and method 3 (PURE mass grid: 5 x 5 signal-quantile bins in (m_H1, m_W1),
+    # no score involved), exposed as monitorable names. The mass x score cross (..._g5_e3) is still logged, not monitored.
+    SIGNIFICANCE_MONITOR_ALIASES = {
+        "validation_significance_eff": "signif/joint/binned_Z_e10",
+        "validation_significance_mass": "signif/mass/binned_Z_g5",
+    }
 
     def __init__(self, options: Options, torch_script: bool = False):
         super(JetReconstructionValidation, self).__init__(options, torch_script)
@@ -36,7 +47,10 @@ class JetReconstructionValidation(JetReconstructionNetwork):
         # self.validation_step_metrics_outputs = []
         self._sens_buffer = []
         self._sens_summary_printed = False
+        self._sens_masses_printed = False
+        self._sens_truth_printed = False
         self._sens_class_scales = None
+        self._mass_setup = None          # resolved lazily: (source_index, columns) or False if unavailable
 
     @property
     def particle_metrics(self) -> Dict[str, Callable[[np.ndarray, np.ndarray], float]]:
@@ -159,7 +173,9 @@ class JetReconstructionValidation(JetReconstructionNetwork):
             for key, value in classification_targets.items()
         }
 
-        self.buffer_significance_inputs(particle_scores, classification_targets, event_weights, batch_size)
+        self.buffer_significance_inputs(particle_scores, classification_targets, event_weights, batch_size,
+                                        self._assigned_masses(sources, jet_predictions, batch_size),
+                                        self._assigned_masses(sources, list(stacked_targets), batch_size, quiet=True))
 
         metrics = self.evaluator.full_report_string(jet_predictions, stacked_targets, stacked_masks, prefix="Purity/")
 
@@ -214,7 +230,49 @@ class JetReconstructionValidation(JetReconstructionNetwork):
             names = []
         return [names[i] if i < len(names) else f"t{i}" for i in range(num_targets)]
 
-    def buffer_significance_inputs(self, particle_scores, classification_targets, event_weights, batch_size):
+    def _resolve_mass_setup(self):
+        """Find which source holds pt/eta/phi/e and at which feature positions. Cached; False = mass bins disabled."""
+        if self._mass_setup is not None:
+            return self._mass_setup
+        setup = False
+        try:
+            info = self.training_dataset.event_info
+            for si, name in enumerate(info.input_names):
+                cols = find_kinematic_columns(info.input_features[name])
+                if cols is not None:
+                    setup = (si, cols)
+                    break
+            if setup is False:
+                warnings.warn("Significance: no source has pt, eta, phi and e/mass -- mass-binned variants disabled")
+        except Exception as e:  # never let the metric kill a training run
+            warnings.warn(f"Significance: could not set up the mass variables ({e!r}) -- mass-binned variants disabled")
+        self._mass_setup = setup
+        return setup
+
+    def _assigned_masses(self, sources, jet_predictions, batch_size, quiet=False):
+        """(num_targets, batch) invariant masses of the jets SPANet assigned to each target (H1, W1, ...), or None."""
+        if not self.SIGNIFICANCE_MASSES:
+            return None
+        setup = self._resolve_mass_setup()
+        if not setup:
+            return None
+        si, cols = setup
+        try:
+            data, mask = sources[si][0], sources[si][1]
+            data, mask = self._to_np(data), self._to_np(mask)
+            return np.vstack([pair_invariant_mass(data, mask, np.asarray(pred).reshape(batch_size, -1), cols)
+                              for pred in jet_predictions])
+        except Exception as e:
+            if quiet:                      # truth-mass diagnostic only: never disable the real mass variants
+                return None
+            if not getattr(self, "_mass_warned", False):
+                self._mass_warned = True
+                warnings.warn(f"Significance: assigned-mass computation failed ({e!r}) -- mass-binned variants disabled")
+            self._mass_setup = False
+            return None
+
+    def buffer_significance_inputs(self, particle_scores, classification_targets, event_weights, batch_size, masses=None,
+                                   truth_masses=None):
         label_key = next((k for k in classification_targets if k.endswith("process_label")), None)
         if label_key is None or event_weights is None:
             if not getattr(self, "_sens_warned", False):
@@ -230,6 +288,8 @@ class JetReconstructionValidation(JetReconstructionNetwork):
             np.asarray(particle_scores, dtype=np.float64).reshape(-1, batch_size),
             np.asarray(classification_targets[label_key]).reshape(-1),
             event_weights.detach().cpu().numpy().astype(np.float64).reshape(-1),
+            None if masses is None else np.asarray(masses, dtype=np.float64).reshape(-1, batch_size),
+            None if truth_masses is None else np.asarray(truth_masses, dtype=np.float64).reshape(-1, batch_size),
         ))
 
     @staticmethod
@@ -279,6 +339,10 @@ class JetReconstructionValidation(JetReconstructionNetwork):
         scores = np.concatenate([b[0] for b in self._sens_buffer], axis=1)      # (num_targets, N)
         labels = np.concatenate([b[1] for b in self._sens_buffer])
         weights = np.concatenate([b[2] for b in self._sens_buffer]) * self._weight_scale_array(labels, testing)
+        truth_parts = [b[4] for b in self._sens_buffer]
+        truth_matrix = np.concatenate(truth_parts, axis=1) if all(m is not None for m in truth_parts) else None
+        mass_parts = [b[3] for b in self._sens_buffer]
+        mass_matrix = np.concatenate(mass_parts, axis=1) if all(m is not None for m in mass_parts) else None
         self._sens_buffer = []
 
         is_signal = labels == self.SIGNIFICANCE_SIGNAL_LABEL
@@ -303,7 +367,30 @@ class JetReconstructionValidation(JetReconstructionNetwork):
         score_sets = {name: scores[i] for i, name in enumerate(names)}
         score_sets["joint"] = np.prod(scores, axis=0) ** (1.0 / scores.shape[0])   # geometric mean of all detections, in [0, 1]
 
-        metrics = significance_metrics(score_sets, is_signal, weights, min_b_raw=self.SIGNIFICANCE_MIN_B_RAW)
+        masses = None
+        if mass_matrix is not None and mass_matrix.shape[1] == len(labels):
+            masses = {f"m_{n}": mass_matrix[i] for i, n in enumerate(names)}
+            if not self._sens_masses_printed and not sanity:
+                self._sens_masses_printed = True
+                # Sanity check of the mass reconstruction: signal should peak near m_H ~ 125 and m_W ~ 80 GeV.
+                print("Significance assigned masses, signal (weighted mean / valid fraction): " + ", ".join(
+                    f"{k}: {np.average(v[is_signal & np.isfinite(v)], weights=weights[is_signal & np.isfinite(v)]):.1f} GeV"
+                    f" / {np.isfinite(v[is_signal]).mean():.3f}" if (is_signal & np.isfinite(v)).any() else f"{k}: none"
+                    for k, v in masses.items()))
+
+        if masses is not None and truth_matrix is not None and not self._sens_truth_printed and not sanity:
+            self._sens_truth_printed = True
+            # Diagnostic: the same pair-mass built from the TRUTH assignment. If predicted ~ truth, the mass reconstruction
+            # is right and the means just reflect the physics (e.g. an off-shell W*); if not, the assignment is still poor.
+            parts = []
+            for i, n in enumerate(names):
+                ok = is_signal & np.isfinite(truth_matrix[i]) & np.isfinite(mass_matrix[i])
+                if ok.any():
+                    parts.append(f"m_{n}: predicted {np.average(mass_matrix[i][ok], weights=weights[ok]):.1f} vs truth "
+                                 f"{np.average(truth_matrix[i][ok], weights=weights[ok]):.1f} GeV (signal, n={int(ok.sum())})")
+            print("Significance mass diagnostic, " + "; ".join(parts))
+
+        metrics = significance_metrics(score_sets, is_signal, weights, min_b_raw=self.SIGNIFICANCE_MIN_B_RAW, masses=masses)
         if self.SIGNIFICANCE_PRIMARY in metrics:
             metrics["validation_significance"] = metrics[self.SIGNIFICANCE_PRIMARY]
         return metrics
@@ -319,6 +406,12 @@ class JetReconstructionValidation(JetReconstructionNetwork):
         # with enough raw background events).
         primary = metrics.get("validation_significance", float("nan"))
         self.log("validation_significance", float(primary) if np.isfinite(primary) else 0.0, sync_dist=False)
+
+        # Plain-name aliases for the other two binning methods so extra ModelCheckpoints can monitor them (a '/' in a
+        # monitored key breaks the checkpoint filename template). Always logged, 0.0 when not computable.
+        for alias, key in self.SIGNIFICANCE_MONITOR_ALIASES.items():
+            v = metrics.get(key, float("nan"))
+            self.log(alias, float(v) if np.isfinite(v) else 0.0, sync_dist=False)
 
     def on_validation_epoch_start(self):
         super().on_validation_epoch_start()

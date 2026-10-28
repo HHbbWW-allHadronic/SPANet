@@ -28,14 +28,14 @@ EVENT:
   H1:
     - b1
     - b2
-  H2: 
-    - q1
-    - q2
-    - q3
-    - q4
-  #W1:
+  #H2: 
   #  - q1
   #  - q2
+  #  - q3
+  #  - q4
+  W1:
+    - q1
+    - q2
   #ISR:
   #  - g1
 
@@ -45,11 +45,11 @@ EVENT:
 PERMUTATIONS:
   H1:
     - [ b1, b2 ]
-  H2: 
-    - [ q1, q2 ]
-    - [ q3, q4 ]
-  #W1:
+  #H2: 
   #  - [ q1, q2 ]
+  #  - [ q3, q4 ]
+  W1:
+    - [ q1, q2 ]
   #ISR:
   #  - [ g1 ]
 
@@ -63,3 +63,5 @@ REGRESSIONS:
 # REQUIRED - REGRESSIONS - List of desired classes to predict from observables.
 # -----------------------------------------------------------------------------
 CLASSIFICATIONS:
+  EVENT:
+    - process_label

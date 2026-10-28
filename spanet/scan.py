@@ -22,11 +22,9 @@ Search space (see ADJUST_PARAMS below -- the single place it is defined):
   - batch_size, hidden_dim: categorical (batch_size kept to powers of 2 for
     GPU efficiency; hidden_dim kept to values divisible by the attention
     head count of the baseline)
-  - classification_loss_scale (log): continuous float range -- how strongly
-    the classification head competes with assignment/detection for the
-    shared encoder
   Everything else (encoder/branch depths, attention heads, combine_pair_loss,
-  assignment/detection loss scales) is taken unchanged from the baseline JSON.
+  assignment/detection/classification loss scales -- classification is 0 in the
+  baseline and is NOT scanned) is taken unchanged from the baseline JSON.
 
 The exact current baseline is enqueued as trial 0 via study.enqueue_trial,
 so it's evaluated under identical conditions (same epoch budget, same
@@ -414,7 +412,6 @@ ADJUST_PARAMS = {
     "focal_gamma": ("float", (0.0, 1.5)),
     "batch_size": ("categorical", [256, 512, 1024]),
     "hidden_dim": ("categorical", [64, 96, 128]),
-    "classification_loss_scale": ("float_log", (0.1, 3.0)),
 }
 
 # DON'T TOUCH THESE YET -- reference only, not read by anything. To scan one of these
@@ -430,6 +427,8 @@ _FIXED_PARAMS_REFERENCE = {
     #"num_attention_heads": ("categorical", [1, 2, 4, 8]),
     #"assignment_loss_scale": ("float", (0.0, 1.0)),
     #"detection_loss_scale": ("float", (0.0, 1.0)),
+    # classification_loss_scale is deliberately NOT here: it is 0 in the baseline (head untrained), and the
+    # significance metric does not use the classification output.
 }
 
 
@@ -744,7 +743,7 @@ def main():
     if args.sampler is None:
         args.sampler = "tpe"
     if args.prune_warmup is None:
-        args.prune_warmup = 25
+        args.prune_warmup = 15
     if args.summary_output is None:
         args.summary_output = os.path.join(args.work_dir, "scan_summary")
 
@@ -830,7 +829,7 @@ def main():
         baseline_values = json.load(f)
     baseline_defaults = {
         "hidden_dim": 128, "batch_size": 256, "dropout": 0.2, "l2_penalty": 0.0002,
-        "focal_gamma": 1.0, "learning_rate": 0.001, "classification_loss_scale": 1.0,
+        "focal_gamma": 1.0, "learning_rate": 0.001,
     }
     # Only parameters that are actually part of the search space are enqueued -- the
     # baseline's other settings reach every trial through the merged baseline JSON
